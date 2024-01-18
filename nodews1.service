@@ -1,5 +1,5 @@
 [Unit]
-Description=S-nodews1
+Description=servjs-nodews1
 Documentation=N
 After=network.target nss-lookup.target
 
