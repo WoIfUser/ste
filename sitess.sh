@@ -2,8 +2,8 @@
 
 # List of websites to block
 BLOCKED_SITES=(
-    "www.example.com"
-    "example.com"
+    "spacechain.org"
+    "www.speedtest.net"
 )
 
 # Get root privileges
