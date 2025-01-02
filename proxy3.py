@@ -8,22 +8,18 @@ import getopt
 
 # Listen
 LISTENING_ADDR = '0.0.0.0'
-if len(sys.argv) > 1:
-    LISTENING_PORT = sys.argv[1]
-else:
-    LISTENING_PORT = 80  
-# Pass
+LISTENING_PORT = int(sys.argv[1]) if sys.argv[1:] else 80
 PASS = ''
 
 # CONST
 BUFLEN = 4096 * 4
 TIMEOUT = 60
 DEFAULT_HOST = '127.0.0.1:22'
-RESPONSE = ''  # Cambiado a bytes para Python 3
+RESPONSE = ''
 
 class Server(threading.Thread):
     def __init__(self, host, port):
-        threading.Thread.__init__(self)
+        super().__init__()
         self.running = False
         self.host = host
         self.port = port
@@ -32,11 +28,10 @@ class Server(threading.Thread):
         self.logLock = threading.Lock()
 
     def run(self):
-        self.soc = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.soc = socket.socket(socket.AF_INET)
         self.soc.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.soc.settimeout(2)
-        intport = int(self.port)
-        self.soc.bind((self.host, intport))
+        self.soc.bind((self.host, int(self.port)))
         self.soc.listen(0)
         self.running = True
 
@@ -71,57 +66,52 @@ class Server(threading.Thread):
     def close(self):
         self.running = False
         with self.threadsLock:
-            threads = list(self.threads)
-            for c in threads:
+            for c in list(self.threads):
                 c.close()
-
 
 class ConnectionHandler(threading.Thread):
     def __init__(self, socClient, server, addr):
-        threading.Thread.__init__(self)
+        super().__init__()
         self.clientClosed = False
         self.targetClosed = True
         self.client = socClient
-        self.client_buffer = b''
+        self.client_buffer = ''
         self.server = server
-        self.log = 'Connection: ' + str(addr)
+        self.log = f'Connection: {addr}'
 
     def close(self):
-        if not self.clientClosed:
-            try:
+        try:
+            if not self.clientClosed:
                 self.client.shutdown(socket.SHUT_RDWR)
                 self.client.close()
-            except Exception as e:
-                print(f"Error closing client socket: {e}")
-            finally:
-                self.clientClosed = True
+        except:
+            pass
+        finally:
+            self.clientClosed = True
 
-        if not self.targetClosed:
-            try:
+        try:
+            if not self.targetClosed:
                 self.target.shutdown(socket.SHUT_RDWR)
                 self.target.close()
-            except Exception as e:
-                print(f"Error closing target socket: {e}")
-            finally:
-                self.targetClosed = True
+        except:
+            pass
+        finally:
+            self.targetClosed = True
 
     def run(self):
         try:
             self.client_buffer = self.client.recv(BUFLEN)
-
-            hostPort = self.findHeader(self.client_buffer.decode(), 'X-Real-Host')
+            hostPort = self.findHeader(self.client_buffer, 'X-Real-Host')
 
             if hostPort == '':
                 hostPort = DEFAULT_HOST
 
-            split = self.findHeader(self.client_buffer.decode(), 'X-Split')
-
+            split = self.findHeader(self.client_buffer, 'X-Split')
             if split != '':
-                _ = self.client.recv(BUFLEN)
+                self.client.recv(BUFLEN)
 
             if hostPort != '':
-                passwd = self.findHeader(self.client_buffer.decode(), 'X-Pass')
-                
+                passwd = self.findHeader(self.client_buffer, 'X-Pass')
                 if len(PASS) != 0 and passwd == PASS:
                     self.method_CONNECT(hostPort)
                 elif len(PASS) != 0 and passwd != PASS:
@@ -135,107 +125,71 @@ class ConnectionHandler(threading.Thread):
                 self.client.send(b'HTTP/1.1 400 NoXRealHost!\r\n\r\n')
 
         except Exception as e:
-            self.log += ' - error: ' + str(e)
+            self.log += f' - error: {str(e)}'
             self.server.printLog(self.log)
         finally:
             self.close()
             self.server.removeConn(self)
 
     def findHeader(self, head, header):
-        aux = head.find(header + ': ')
-        
+        aux = head.find(header.encode() + b': ')
         if aux == -1:
             return ''
-
-        aux = head.find(':', aux)
-        head = head[aux + 2:]
-        aux = head.find('\r\n')
-
+        aux = head.find(b':', aux)
+        head = head[aux+2:]
+        aux = head.find(b'\r\n')
         if aux == -1:
             return ''
-
-        return head[:aux]
+        return head[:aux].decode()
 
     def connect_target(self, host):
         i = host.find(':')
-        
         if i != -1:
-            port = int(host[i + 1:])
+            port = int(host[i+1:])
             host = host[:i]
         else:
-            port = 443 if hasattr(self, 'method') and self.method == 'CONNECT' else int(sys.argv[1])
+            port = 443 if self.method == 'CONNECT' else LISTENING_PORT
 
         (soc_family, soc_type, proto, _, address) = socket.getaddrinfo(host, port)[0]
-
         self.target = socket.socket(soc_family, soc_type, proto)
         self.targetClosed = False
         self.target.connect(address)
 
     def method_CONNECT(self, path):
-        self.log += ' - CONNECT ' + path
-
-        # Cambiar RESPONSE a bytes si es necesario.
-        response_bytes = RESPONSE or b'HTTP/1.1 200 Connection established\r\n\r\n'
-        
-        # Enviar respuesta al cliente.
-        try:
-            # Enviar respuesta inicial.
-            if isinstance(response_bytes, str):
-                response_bytes.encode()  # Asegúrate de que sea bytes.
-                
-            # Enviar respuesta al cliente.
-            sent_bytes_count = 0
-            
-            while sent_bytes_count < len(response_bytes):
-                sent_bytes_count += self.client.send(response_bytes[sent_bytes_count:])
-                
-            # Limpiar el buffer del cliente.
-            self.client_buffer = b''
-
-            # Log de conexión.
-            print(f"Log: {self.log}")
-            
-            # Iniciar el método doCONNECT.
-            return (self.doCONNECT())
-        
-        except Exception as e:
-          print(f"Error in method_CONNECT: {e}")
+        self.log += f' - CONNECT {path}'
+        self.connect_target(path)
+        self.client.sendall(RESPONSE.encode())
+        self.server.printLog(self.log)
+        self.doCONNECT()
 
     def doCONNECT(self):
-        
-         socs = [self.client, getattr(self,'target', None)]
-         count=0 
-         error=False 
-         while True: 
-             count+=1 
-             (recv, _, err) = select.select(socs,[ ], socs ,3) 
-             if err: 
-                 error=True 
-             if recv: 
-                 for in_ in recv: 
-                     try: 
-                         data=in_.recv(BUFLEN) 
-                         if data: 
-                             if in_ is getattr(self,'target', None): 
-                                 sent_bytes_count=0 
-                                 while sent_bytes_count < len(data): 
-                                     sent_bytes_count+=self.client.send(data[sent_bytes_count:]) 
-                             else: 
-                                 sent_bytes_count=0 
-                                 while sent_bytes_count < len(data): 
-                                     sent_bytes_count+=self.target.send(data[sent_bytes_count:]) 
-
-                             count=0 
-                         else: break 
-
-                     except Exception as e: 
-                         error=True 
-                         break 
-
-             if count==TIMEOUT: error=True 
-
-             if error: break 
-
+        socs = [self.client, self.target]
+        count = 0
+        error = False
+        while True:
+            count += 1
+            (recv, _, err) = select.select(socs, [], socs, 3)
+            if err:
+                error = True
+            if recv:
+                for in_ in recv:
+                    try:
+                        data = in_.recv(BUFLEN)
+                        if data:
+                            if in_ is self.target:
+                                self.client.send(data)
+                            else:
+                                while data:
+                                    byte = self.target.send(data)
+                                    data = data[byte:]
+                            count = 0
+                        else:
+                            break
+                    except:
+                        error = True
+                        break
+            if count == TIMEOUT or error:
+                break
 
 def print_usage():
     print('Usage: proxy.py -p <port>')
@@ -247,42 +201,33 @@ def parse_args(argv):
     global LISTENING_PORT
     
     try:
-        opts, args = getopt.getopt(argv,"hb:p:",["bind=","port="])
+        opts, args = getopt.getopt(argv, "hb:p:", ["bind=", "port="])
     except getopt.GetoptError:
         print_usage()
         sys.exit(2)
-
     for opt, arg in opts:
         if opt == '-h':
             print_usage()
             sys.exit()
-        
-		elif opt in ("-b", "--bind"):
-			LISTENING_ADDR=arg
-		
-		elif opt in ("-p", "--port"):
-			LISTENING_PORT=int(arg)
-
+        elif opt in ("-b", "--bind"):
+            LISTENING_ADDR = arg
+        elif opt in ("-p", "--port"):
+            LISTENING_PORT = int(arg)
 
 def main(host=LISTENING_ADDR, port=LISTENING_PORT):
     print("\n:-------PythonProxy-------:\n")
-    print("Listening addr: " + LISTENING_ADDR)
-    print("Listening port: " + str(LISTENING_PORT) + "\n")
+    print(f"Listening addr: {LISTENING_ADDR}")
+    print(f"Listening port: {LISTENING_PORT}\n")
     print(":-------------------------:\n")
-    
-	server=Server(LISTENING_ADDR,LISTENING_PORT) 
-	server.start() 
-
-	while True: 
-		try: 
-			time.sleep(2) 
-		
-		except KeyboardInterrupt: 
-			print('Stopping...') 
-			server.close() 
-			break
-
+    server = Server(LISTENING_ADDR, LISTENING_PORT)
+    server.start()
+    try:
+        while True:
+            time.sleep(2)
+    except KeyboardInterrupt:
+        print('Stopping...')
+        server.close()
 
 if __name__ == '__main__':
-	parse_args(sys.argv[1:])
-	main()
+    parse_args(sys.argv[1:])
+    main()
